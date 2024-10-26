@@ -7,4 +7,4 @@ It uses and ESP32, MAX7219 dipslay and VL53L0X sensors to determine when an obje
 
 The full version includes WiFi onboarding, a web interface for some settings and over-the-air (OTA) updates for future firmwware releases.
 
-Please refer to the [wiki](https://github.com/Resinchem/Robot-Car-Timer/wiki) for full information, including installation, setup, options and use of the system.
+Please refer to the [wiki](https://github.com/Resinchem/Robot-Car-Timer/wiki) (coming soon) for full information, including installation, setup, options and use of the system.
