@@ -10,4 +10,4 @@ _This is the recommended version._ It contains all the features, including the a
 
 **racecar_nowifi.ino**
 
-This version should only be used if use in the intended location does not have WiFi available.  It obviously does not include any sort of web interface and therefore any changes to the settings and options require editing the source code, recompiling and then uploading.  And since over-the-air updates are not available without WiFi, each update or change requires connecting the controller to a PC/USB port for uploading.  _Future releases of the software may not include the non-WiFi version!_
+This version should only be used if the intended installation location does not have WiFi available.  It obviously does not include any sort of web interface and therefore any changes to the settings and options require editing the source code, recompiling and then uploading.  And since over-the-air updates are not available without WiFi, each update or change requires connecting the controller to a PC/USB port for uploading.  _Future releases of the software may not include the non-WiFi version!_
