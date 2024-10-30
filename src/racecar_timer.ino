@@ -8,7 +8,7 @@
     http://ip_address/leds&brightness=x - change LED brightness.  x = 1 to 10.
     http://ip_address/timer&brightness=x - change timer brightness. x = 1 to 10.
 
-    Version: 0.20  
+    Version: 0.21  
    ===============================================================*/
 //Basic Web and Wifi
 #include <WiFi.h>
@@ -19,9 +19,10 @@
 #include <ArduinoJson.h>                //Needed for WiFi onboarding: https://arduinojson.org/ 
 #include <Wire.h>                       //I2C - distance sensors (ESP Core)
 #include <SPI.h>                        //SPI - Timer display (ESP Core)
-//OTA Libraries
+//OTA and Firmware Update Libraries
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>                 //OTA Updates: https://github.com/jandrassy/ArduinoOTA
+#include <ElegantOTA.h>                 // v3.1.5 Web based firmware OTA Update:  https://github.com/ayushsharma82/ElegantOTA/
 //VL53L0X
 #include <VL53L0X.h>                    //VL53L0X ToF Sensor https://github.com/pololu/vl53l0x-arduino  
 //MAX7219 Display
@@ -32,7 +33,7 @@
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
 #include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED
 
-#define VERSION "v0.20 (ESP32)"
+#define VERSION "v0.21 (ESP32)"
 #define APPNAME "RACECAR TIMER"
 #define WIFIMODE 2                      // 0 = Only Soft Access Point, 1 = Only connect to local WiFi network with UN/PW, 2 = Both
 #define SERIAL_DEBUG 0                  // 0 = Disable (must be disabled if using RX/TX pins), 1 = enable
@@ -55,14 +56,18 @@
 #define TOGGLE_AUTO 27                  //Toggle switch - auto timing mode
 #define TOGGLE_MANUAL 13                //Toggle switch - manual timing mode
 
-//Timing & System Options
+//Timing & System Options - can also be updated/saved via web settings
 #define USE_TENTHS true                   //Setting to false will only show minutes and whole seconds on timer
-#define MAX_RACE_MINUTES 5                //Max race time in minutes (10 max when using tenths, 100 otherwise)
+#define MAX_RACE_TIME 300                 //Max race time in seconds (599 max when using tenths, 5999 otherwise)
 #define USE_LEDS true                     //Set to false if not using LED strips (changing this overrides num LEDs)
 #define DEFAULT_TIMER_INTENSITY 3         //Matrix timer starting brightness (0-10). Can be changed via URL command.
 //Sensor Distances (in mm)
 #define START_SENSOR_DIST 406              //Should be distance (mm) from start line sensor to the opposite edge of race track
 #define END_SENSOR_DIST 406                //Should be distance (mm) from end line sensor to the opposite edge of race track
+//LED Lighting Strips
+#define NUM_LEDS 500                       //Number of LEDs (one side only - max - will be updated via onboarding)
+#define MILLIAMP_MAX 15000                 //Max milliamp draw permitted by the LEDs
+#define DEFAULT_LED_BRIGHTNESS 125         //LED Strip brightness (0-255) - read from config file and set during onboarding
 //==================================================
 
 //================================================================================
@@ -72,51 +77,44 @@
 //MAX7219 Display
 #define MAX_DEVICES 4                      //MAX7219 - Number of controllers
 #define HARDWARE_TYPE MD_MAX72XX::FC16_HW  //MAX7219 Matrix
-//LED Lighting Strips
-#define NUM_LEDS 500                       //Number of LEDs (one side only - max - will be updated via onboarding)
-#define MILLIAMP_MAX 15000                 //Max milliamp draw permitted by the LEDs
-#define DEFAULT_LED_BRIGHTNESS 125         //LED Strip brightness (0-255) - read from config file and set during onboarding
+#define NUMELEMENTS(x) sizeof(x)/sizeof(x[0])  // Number of elements in arrays
+
 
 //Boot indication variables
 bool useOnboardLED = true;                 //Use onboard LED to show successful wifi join and config file creation 
 int blinkLED = 0;                          //Counter for above.  LED will blink 5 times and remain on if useOnboardLED is true
 bool useLEDs = USE_LEDS;                   //LED strips will be disabled if num of LEDs is set to zero during onboarding.
 
-//Variables (wifi/onboarding)
-String deviceName = "RaceTimer";        //Default Device Name - 16 chars max, no spaces. Will be updated via onboarding. 
+//Local Variables (wifi/onboarding)
+String deviceName = "RaceTimer";           //Default Device Name - 16 chars max, no spaces. 
 String wifiHostName = deviceName;
-
-bool onboarding = false;                //Set to true if no config file or wifi cannot be joined
 String wifiSSID = "";
 String wifiPW = "";
 byte macAddr[6];                           //Array of device mac address as hex bytes (reversed)
 String strMacAddr;                         //Formatted string of device mac address
 String baseIPAddress;                      //Device assigned IP Address
+bool onboarding = false;                   //Will be set to true if no config file or wifi cannot be joined
 
-//For settings/onboarding (JSON)
+//Local Variables (Settings & options)
 int numLEDs = 30;
-byte ledBrightness = 125;
-byte timerBrightness = DEFAULT_TIMER_INTENSITY;  //This is not part of onboarding, but can be changed via URL command (valid 1-10).
+byte ledBrightness = DEFAULT_LED_BRIGHTNESS;
 int milliAmpsMax = 8000;
-unsigned long maxRaceTime = 599900;              //Just a default starting value.  Actual value updated in Setup, using MAX_TIMER_MINUTES
-
-char wifi_ssid[65];
-char wifi_pw[65];
-char device_name[17];
-char led_count[4];
-char led_brightness[4];
-char milli_amps_max[6];
+byte timerBrightness = DEFAULT_TIMER_INTENSITY;  //This is not part of onboarding, but can be changed via URL command (valid 1-10).
+bool showTenths = USE_TENTHS;                    //true = show tenths of a second, false = show only minutes/seconds
+bool invertTimer = false;                        //Flip timer display horizontally (so it can be mounted upside down)
+unsigned long maxRaceTime = 599900;              //Just a default starting value.  Actual value updated in Setup from config file
+unsigned int startSensorDist = 400;              //Max trigger distance for start line sensor (in mm)
+unsigned int endSensorDist = 400;                //Max trigger distance for finish line sensor (in mm)
 
 //OTA Variables
-String otaHostName = deviceName + "_OTA";  //Will be updated by device name from onboarding + _OTA
+String otaHostName = deviceName + "_OTA";   //Will be updated by device name from onboarding + _OTA
 bool ota_flag = true;                       // Must leave this as true for board to broadcast port to IDE upon boot
 uint16_t ota_boot_time_window = 2500;       // minimum time on boot for IP address to show in IDE ports, in millisecs
 uint16_t ota_time_window = 20000;           // time to start file upload when ota_flag set to true (after initial boot), in millsecs
 uint16_t ota_time_elapsed = 0;              // Counter when OTA active
 uint16_t ota_time = ota_boot_time_window;
 
-//Application Variables
-bool showTenths = USE_TENTHS;               //true = show tenths of a second, false = show only minutes/seconds
+//Misc. Application Variables
 bool systemStandby = false;                 //Toggle - center pos: puts system in standby (stops processes, turns off timer/LEDs)
 bool timerAuto = true;                      //Toggle - auto/manual timing     
 bool timerRunning = false;
@@ -136,18 +134,67 @@ int oldAutoState;
 int oldManualState;
 bool poweredDown = false;
 
+//LED Color Definitions - values can be changed via web settings
+CRGB ledColorReady = CRGB::Yellow;
+CRGB ledColorRaceSeg1 = CRGB::Blue;
+CRGB ledColorRaceSeg2 = CRGB::White;
+CRGB ledColorEnd = CRGB::Green;
+CRGB ledColorExpired = CRGB::Red;
+//LED Color indices for web drop downs (match to colors above from array)
+byte webColorReady = 8;     //Yellow
+byte webColorRaceSeg1 = 1;  //Blue
+byte webColorRaceSeg2 = 0;  //White
+byte webColorEnd = 3;       //Green
+byte webColorExpired = 7;   //Red
+
+//Define Color Arrays
+//If adding new colors, increase array sizes and add to void defineColors()
+CRGB ColorCodes[10];
+String WebColors[10];
+
 //Intialize web server
 WebServer server(80);
 
 //Instantiate sensors, display and LEDs
 VL53L0X startTimer;
 VL53L0X endTimer;
-TwoWire bus1 = TwoWire(0);   //I2C Bus 1
+TwoWire bus1 = TwoWire(0);     //I2C Bus 1
 TwoWire bus2 = TwoWire(1);     //I2C Bus 2
 MD_Parola timerDisplay = MD_Parola(HARDWARE_TYPE, SPI_DIN, SPI_CLK, SPI_CS, MAX_DEVICES);  //SPI LED Display (Type, DIN, SCL, CS, NumDevices)
 CRGB LEDs[NUM_LEDS];
 
+//===========================
+// Populate Color Arrays
+//===========================
+void defineColors() {
+  //  Increase array sizes in definitions if adding new
+  //  Color must be defined as a CRGB::Named Color or as a CRGB RGB value: CRGB(r, g, b);
+   ColorCodes[0] = CRGB::White;
+   ColorCodes[1] = CRGB::Blue;
+   ColorCodes[2] = CRGB::Cyan;
+   ColorCodes[3] = CRGB::Green;
+   ColorCodes[4] = CRGB::Magenta;
+   ColorCodes[5] = CRGB::Orange;
+   ColorCodes[6] = CRGB::Pink;
+   ColorCodes[7] = CRGB::Red;
+   ColorCodes[8] = CRGB::Yellow;
+   ColorCodes[9] = CRGB::Black;
+   
+   WebColors[0] = "White";
+   WebColors[1] = "Blue";
+   WebColors[2] = "Cyan";
+   WebColors[3] = "Green";
+   WebColors[4] = "Magenta";
+   WebColors[5] = "Orange";
+   WebColors[6] = "Pink";
+   WebColors[7] = "Red";
+   WebColors[8] = "Yellow";
+   WebColors[9] = "Black (off)";
+}
 
+//============================
+// Read config file from flash (LittleFS)
+//============================
 void readConfigFile() {
 
   if (LittleFS.begin(FORMAT_LITTLEFS_IF_FAILED)) {  
@@ -179,30 +226,31 @@ void readConfigFile() {
           #endif
           // Read values here from LittleFS (v0.42 - add defaults for all values in case they don't exist to avoid potential boot loop)
           //DON'T NEED TO STORE OR RECALL WIFI INFO - Written to flash automatically by library when successful connection.
-          strcpy(device_name, json["device_name"]|"DefaultDevice");
-          strcpy(led_count, json["led_count"]|"30");
-          strcpy(led_brightness, json["led_brightness"]|"5");
-          strcpy(milli_amps_max, json["milli_amps_max"]|"80000");
+          deviceName = json["device_name"] | "MyDevice";
+          numLEDs = json["led_count"] | 30;
+          ledBrightness = json["led_brightness"] | 125;
+          milliAmpsMax = json["milli_amps_max"] | 2500;
+          timerBrightness = json["timer_brightness"] | 3;
+          showTenths = json["show_tenths"] | true;
+          invertTimer = json["invert_timer"] | false;
+          maxRaceTime = json["max_race_time"] | 599000;
+          startSensorDist = json["start_sensor_dist"] | 400; 
+          endSensorDist = json["end_sensor_dist"] | 400;
+          webColorReady = json["color_ready"] | 8;
+          webColorRaceSeg1 = json["color_race_seg1"] | 1;
+          webColorRaceSeg2 = json["color_race_seg2"] | 0;
+          webColorEnd = json["color_end"] | 3;
+          webColorExpired = json["color_expired"] | 7; 
           
-
-         //Need to set device and hostnames here
-          deviceName = String(device_name);
+          ledColorReady = ColorCodes[webColorReady];
+          ledColorRaceSeg1 = ColorCodes[webColorRaceSeg1];
+          ledColorRaceSeg2 = ColorCodes[webColorRaceSeg2];
+          ledColorEnd = ColorCodes[webColorEnd];
+          ledColorExpired = ColorCodes[webColorExpired];
+        
           wifiHostName = deviceName;
           otaHostName = deviceName + "_OTA";
-          numLEDs = (String(led_count)).toInt();
-          ledBrightness = (String(led_brightness).toInt()) * 25;  //Web setting is 1 to 10, which will be 25 - 250 (multiply/divide by 25).
-          if (ledBrightness > 250) {
-            ledBrightness = 250;
-          } else if (ledBrightness < 25) {
-            ledBrightness = 25;
-          }
-          milliAmpsMax = (String(milli_amps_max)).toInt();
-          onboarding = false;
-          if (numLEDs < 1) {
-            useLEDs = false;
-          } else if (numLEDs > 500) {
-            numLEDs = 500;
-          }
+ 
         } else {
           #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
             Serial.println("failed to load json config");
@@ -226,35 +274,35 @@ void readConfigFile() {
     #endif
     
   }
-
 }
 
+//==============================
+// Write config file to flash (LittleFS)
+//==============================
 void writeConfigFile(bool restart_ESP) {
   //Write settings to LittleFS (reboot to save)
-  char t_device_name[18];
-  byte dev_name_len = 18;
-  char t_led_count[4];
-  char t_led_brightness[4];
-  char t_milli_amps_max[6];
 
-  #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
-    Serial.println("Attempting to update boot settings");
-  #endif
   if (LittleFS.begin()) {
     //convert values to be saved to char arrays
-    deviceName.toCharArray(t_device_name, dev_name_len);  //string
-    sprintf(t_led_count, "%u", numLEDs);
-    sprintf(t_led_brightness, "%u", (ledBrightness / 25));
-    sprintf(t_milli_amps_max, "%u", milliAmpsMax);
-
     //Create serilized JSON doc
     DynamicJsonDocument doc(1024);
     doc.clear();
     //Add any values to save to JSON document
-    doc["device_name"] = t_device_name;
-    doc["led_count"] = t_led_count;
-    doc["led_brightness"] = t_led_brightness;
-    doc["milli_amps_max"] = t_milli_amps_max;
+    doc["device_name"] = deviceName;
+    doc["led_count"] = numLEDs;
+    doc["led_brightness"] = ledBrightness;
+    doc["milli_amps_max"] = milliAmpsMax;
+    doc["timer_brightness"] = timerBrightness;
+    doc["show_tenths"] = showTenths;
+    doc["invert_timer"] = invertTimer;
+    doc["max_race_time"] = maxRaceTime;
+    doc["start_sensor_dist"] = startSensorDist;
+    doc["end_sensor_dist"] = endSensorDist;
+    doc["color_ready"] = webColorReady;
+    doc["color_race_seg1"] = webColorRaceSeg1;
+    doc["color_race_seg2"] = webColorRaceSeg2;
+    doc["color_end"] = webColorEnd;
+    doc["color_expired"] = webColorExpired;
 
     File configFile = LittleFS.open("/config.json", "w");
     if (!configFile) {
@@ -350,36 +398,173 @@ void webMainPage() {
     mainPage += "<title>VAR_APP_NAME Main Page</title>\
     <style>\
       body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #0000ff; }\
-      table, th, td {\
-      border: 1px solid black;\
-      border-collapse: collapse;\
-    }\
     </style>\
     </head>\
     <body>";
-    mainPage += "<H1>VAR_APP_NAME Main Page</H1>";
+    mainPage += "<H1>VAR_APP_NAME Settings and Options</H1>";
     mainPage += "Firmware Version: VAR_CURRENT_VER<br><br>";
-    mainPage += "<table>";
+    mainPage += "<table border=\"1\" >";
     mainPage += "<tr><td>Device Name:</td><td>" + deviceName + "</td</tr>";
     mainPage += "<tr><td>WiFi Network:</td><td>" + WiFi.SSID() + "</td</tr>";   
     mainPage += "<tr><td>MAC Address:</td><td>" + strMacAddr + "</td</tr>";
     mainPage += "<tr><td>IP Address:</td><td>" + baseIPAddress + "</td</tr>";
-    mainPage += "<tr><td>Number of LEDs:</td><td>" + String(numLEDs) + "</td</tr>";
-    mainPage += "<tr><td>LED Brightness:</td><td>" + String(ledBrightness / 25) + "</td</tr>"; 
-    mainPage += "<tr><td>Timer Brightness:</td><td>" + String(timerBrightness) + "</td</tr>";
-    mainPage += "<tr><td>Max Milliamps:</td><td>" + String(milliAmpsMax) + "</td</tr>"; 
     mainPage +="</table>";
     mainPage += "-------------------------------------------------<br><br>";
-    mainPage += "You may issue the following commands via your browser to make changes:<br><br>";
+    mainPage += "Changes made below will be used <b><i>until the controller is restarted</i></b>, unless the box to save the settings as new boot defaults is checked. \
+    To test settings, leave the box unchecked and click 'Update'. Once you have settings you'd like to keep, check the box and click 'Update' to write the settings as the new boot defaults. \
+    If you want to change wifi settings or the device name, you must use the 'Reset All' command.\
+    <b><p style=\"color:red;\">NOTE: Changing any settings below will stop the timer and reset the system back to 'Ready' mode!</b></p>\
+    <form method=\"post\" enctype=\"application/x-www-form-urlencoded\" action=\"/applysettings\">";
+
+    //Sensor Settings
+    mainPage += "<b><u>Sensor Settings</u></b><br>\
+      Maximum distances (in mm) that the sensors will trigger based on motion.  Should be the distance from sensor to just inside the opposite side of the track or course.<br><br>\
+      <table border=\"0\">\
+      <tr>\
+      <td><label for=\"startsensordist\">Start Line Sensor Distance (100-1000):</label></td>\
+      <td><input type=\"number\" min=\"100\" max=\"1000\" step=\"1\" name=\"startsensordist\" value=\"";
+    mainPage += String(startSensorDist);  
+    mainPage += "\">mm</td></tr>\
+      <tr>\
+      <td><label for=\"endsensordist\">Finish Line Sensor Distance (100-1000):</label></td>\
+      <td><input type=\"number\" min=\"100\" max=\"1000\" step=\"1\" name=\"endsensordist\" value=\"";
+    mainPage += String(endSensorDist);
+    mainPage += "\">mm</td></tr></table><br>";
+
+    //Timer Settings
+    mainPage += "<b><u>Timer Settings</u></b><br>\
+      Maximum allowable race time is determined by the 'Show Tenths' setting.  When enabled, max race time is 599 seconds.  When not using tenths, max race time is 5,999 seconds.<br><br>\
+      <table>\
+      <tr>\
+      <td><label for=\"timerbrightness\">Timer Brightness (0-10):</label></td>\
+      <td><input type=\"number\" min=\"0\" max=\"10\" step=\"1\" name=\"timerbrightness\" value=\"";
+    mainPage += String(timerBrightness);
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"chkinverttimer\">Flip Timer Display:</label></td>\
+      <td><input type=\"checkbox\" name=\"chkinverttimer\" value=\"invert\"";
+
+    if (invertTimer) {
+      mainPage += " checked";
+    }
+    mainPage += "></td></tr>\
+      <tr>\
+      <td><label for=\"chkshowtenths\">Use Tenths Timing:</label></td>\
+      <td><input type=\"checkbox\" name=\"chkshowtenths\" value=\"showtenths\"";
+    if (showTenths) {
+      mainPage += " checked";
+    } 
+    mainPage += "></td></tr>\
+      <tr>\
+      <td><label for=\"maxracetime\">Max Allotted Race Time:</label></td>\
+      <td><input type=\"number\" min=\"0\" max=\"5999\" step=\"1\" name=\"maxracetime\" value=\"";
+    mainPage += String((maxRaceTime)/1000);
+    mainPage += "\"> seconds</td</tr>\
+      </table><br>";
+
+    //LED Settings
+    mainPage += "<b><u>LED Settings</u></b><br>\
+      If you are not using LED strips, then set the number of LEDs and brightness levels to 0.  For maximum milliamps, the recommended value is 80% of the peak amps provided by your power supply.<br><br>\
+      <table>\
+      <tr>\
+      <td><label for=\"ledcount\">Number of LED Pixels (0-500):</label></td>\
+      <td><input type=\"number\" min=\"0\" max=\"500\" step=\"1\" name=\"ledcount\" value=\"";
+    mainPage += String(numLEDs);    
+    mainPage += "\"> (0 = no LED use)</td></tr>\
+      <tr>\
+      <td><label for=\"ledbrightness\">Active LED Brightness (0-10):</label></td>\
+      <td><input type=\"number\" min=\"0\" max=\"10\" step=\"1\" name=\"ledbrightness\" value=\"";
+    mainPage += String((ledBrightness)/25);
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"maxmilliamps\">Maximum Milliamps (2000-15000):</label></td>\
+      <td><input type=\"number\" min=\"2000\" max=\"15000\" step=\"1\" name=\"maxmilliamps\" value=\"";
+    mainPage += String(milliAmpsMax);
+    mainPage += "\"></td></tr>";    
+    //LED Color drop downs
+    mainPage += "<tr>\
+      <td><label for=\"readycolor\">Ready Color:</label></td>\
+      <td><select name=\"readycolor\">";
+      for (byte i = 0; i < NUMELEMENTS(WebColors); i++) {
+        mainPage += "<option value=\"" + String(i) + "\"";
+        if (i == webColorReady) {
+          mainPage += " selected";
+        }
+        mainPage += ">" + WebColors[i] + "</option>";
+      }
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"racecolor1\">Active Race Color 1:</label></td>\
+      <td><select name=\"racecolor1\">";
+      for (byte i = 0; i < NUMELEMENTS(WebColors); i++) {
+        mainPage += "<option value=\"" + String(i) + "\"";
+        if (i == webColorRaceSeg1) {
+          mainPage += " selected";
+        }
+        mainPage += ">" + WebColors[i] + "</option>";
+      }
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"racecolor2\">Active Race Color 2:</label></td>\
+      <td><select name=\"racecolor2\">";
+      for (byte i = 0; i < NUMELEMENTS(WebColors); i++) {
+        mainPage += "<option value=\"" + String(i) + "\"";
+        if (i == webColorRaceSeg2) {
+          mainPage += " selected";
+        }
+        mainPage += ">" + WebColors[i] + "</option>";
+      }
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"endcolor\">Completed Race Color:</label></td>\
+      <td><select name=\"endcolor\">";
+      for (byte i = 0; i < NUMELEMENTS(WebColors); i++) {
+        mainPage += "<option value=\"" + String(i) + "\"";
+        if (i == webColorEnd) {
+          mainPage += " selected";
+        }
+        mainPage += ">" + WebColors[i] + "</option>";
+      }
+    mainPage += "\"></td></tr>\
+      <tr>\
+      <td><label for=\"expiredcolor\">Race Time Expired Color:</label></td>\
+      <td><select name=\"expiredcolor\">";
+      for (byte i = 0; i < NUMELEMENTS(WebColors); i++) {
+        mainPage += "<option value=\"" + String(i) + "\"";
+        if (i == webColorExpired) {
+          mainPage += " selected";
+        }
+        mainPage += ">" + WebColors[i] + "</option>";
+      }
+    mainPage += "\"></td></tr></table><br>";
+    
+    //Save as boot defaults checkbox
+    mainPage += "<b><u>Boot Defaults</u></b><br><br>\
+      <input type=\"checkbox\" name=\"chksave\" value=\"save\">Save all settings as new boot defaults (controller will reboot)<br><br>\
+      <input type=\"submit\" value=\"Update\">\
+      </form>\
+      <br>\
+      <h2>Controller Commands</h2>\
+      <b>Caution</b>: Restart and Reset are executed <i>immediately</i> when the button is clicked.<br>\
+      <table border=\"1\" cellpadding=\"10\">\
+      <tr>\
+      <td><button id=\"btnrestart\" onclick=\"location.href = './restart';\">Restart</button></td><td>This will reboot controller and reload default boot values.</td>\
+      </tr><tr>\
+      <td><button id=\"btnreset\" style=\"background-color:#FAADB7\" onclick=\"location.href = './reset';\">RESET ALL</button></td><td><b>WARNING</b>: This will clear all settings, including WiFi! You must complete initial setup again.</td>\
+      </tr><tr>\
+      <td><button id=\"btnupdate\" onclick=\"location.href = './update';\">Firmware Upgrade</button></td><td><i>BETA:</i> Upload and apply new firmware from local file.</td>\
+      </tr></table><br>";
+    mainPage += "-------------------------------------------------<br><br>";
+    mainPage += "You may also issue the following commands directly via your browser to make changes:<br><br>";
     mainPage += "<table>";
     mainPage += "<tr><td>Restart/Reboot the Controller:</td><td>http://" + baseIPAddress + "/restart</td></tr>";
     mainPage += "<tr><td>Reset Device - Remove all settings (you must onboard again):</td><td>http://" + baseIPAddress + "/reset</td></tr>";
-    mainPage += "<tr><td>OTA Update - put device into Arduino OTA update mode:</td><td>http://" + baseIPAddress + "/otaupdate</td></tr>";
+    mainPage += "<tr><td>Arduino OTA Update - put device into OTA update mode:</td><td>http://" + baseIPAddress + "/otaupdate</td></tr>";
     mainPage += "<tr><td>LED Brightness*:</td><td>http://" + baseIPAddress + "/leds?brightness=x  (where x = 1 to 10)</td></tr>";
     mainPage += "<tr><td>Timer Brightness*:</td><td>http://" + baseIPAddress + "/timer?brightness=x  (where x = 1 to 10)</td></tr>";
-    mainPage += "</table><br><br>";
-    mainPage += "<i>*Changes to brightness values are temporary and will reset when the controller is restarted.</i>";
-
+    mainPage += "</table><br>";
+    mainPage += "<i>*Changes to brightness values using this method are temporary and will reset when the controller is restarted.</i>";
+ 
   }
   mainPage += "</body></html>";
   mainPage.replace("VAR_APP_NAME", APPNAME); 
@@ -472,9 +657,140 @@ void handleOnboard() {
   }
 }
 
+void handleSettingsUpdate() {
+  //Update local variables
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+  } else {
+    //Stop any active races
+    timerRunning = false;
+    timerComplete = false;
+    String saveSettings;
+    String flipTimer;
+    String useTenths;
+    int numLEDsOri = numLEDs;  //Needed to refresh display if LED number changed to lower value
+    numLEDs = server.arg("ledcount").toInt();
+
+    if (numLEDs < 0) {
+      useLEDs = false;
+    } else {
+      useLEDs = true;
+    }
+    ledBrightness = (server.arg("ledbrightness").toInt() * 25);
+    if (ledBrightness > 250) ledBrightness = 250;
+    milliAmpsMax = server.arg("maxmilliamps").toInt();
+    timerBrightness = server.arg("timerbrightness").toInt();
+    useTenths = server.arg("chkshowtenths");
+    if (useTenths == "showtenths") {
+      showTenths = true;
+    } else {
+      showTenths = false;
+    }
+    flipTimer = server.arg("chkinverttimer");
+    if (flipTimer == "invert") {
+      invertTimer = true;
+    } else {
+      invertTimer = false;
+    }
+    maxRaceTime = server.arg("maxracetime").toInt();
+    if ((maxRaceTime > 599) && (showTenths)) {
+      maxRaceTime = 599000;
+    } else if (maxRaceTime > 5999) {
+      maxRaceTime = 5999000;
+    } else {
+      maxRaceTime = maxRaceTime * 1000;
+    }
+    startSensorDist = server.arg("startsensordist").toInt();
+    endSensorDist = server.arg("endsensordist").toInt();
+    //LED Colors
+    webColorReady = server.arg("readycolor").toInt();
+    webColorRaceSeg1 = server.arg("racecolor1").toInt();
+    webColorRaceSeg2 = server.arg("racecolor2").toInt();
+    webColorEnd = server.arg("endcolor").toInt();
+    webColorExpired = server.arg("expiredcolor").toInt(); 
+
+    ledColorReady = ColorCodes[webColorReady];
+    ledColorRaceSeg1 = ColorCodes[webColorRaceSeg1];
+    ledColorRaceSeg2 = ColorCodes[webColorRaceSeg2];
+    ledColorEnd = ColorCodes[webColorEnd];
+    ledColorExpired = ColorCodes[webColorExpired];
+
+    saveSettings = server.arg("chksave");
+    //Update displays with any new values
+    updateDisplays(numLEDsOri);
+
+    //Web page output
+    String message = "<html>\
+      </head>\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
+        <title>Current System Settings</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+      </head>\
+      <body>\
+      <H1>Settings updated!</H1><br>\
+      <H3>Current values are:</H3>";
+      message += "<u>Sensor Settings</u><br>";
+      message += "Start Sensor Max Distance: " + String(startSensorDist) + " mm<br>";
+      message += "End Sensor Max Distance: " + String(endSensorDist) + " mm<br><br>";
+
+      message += "<u>Timer Settings</u><br>";
+      message += "Timer Brightness: " + String(timerBrightness)  + "<br>";
+      message += "Flip Timer Display: ";
+      if (invertTimer) {
+        message += "YES<br>";
+      } else {
+        message += "No<br>";
+      }
+      message += "Use Tenths Timing: ";
+      if (showTenths) {
+        message += "YES<br>";
+      } else {
+        message += "No<br>";
+      }
+      message += "Max Race Time Allowed: " + String((maxRaceTime / 1000)) + " seconds<br><br>";
+
+      message += "<u>LED Settings</u><br>";
+      message += "Number of LEDs: " + String(numLEDs);
+      if (!useLEDs) {
+        message += " (LEDs disabled)<br>";
+      } else {
+        message += "<br>";
+        message += "LED Brightness: " + String((ledBrightness/25)) + "<br>";
+        message += "Maximum Milliamps: " + String(milliAmpsMax) + "<br>";
+        message += "Ready Color: " + WebColors[webColorReady] + "<br>";
+        message += "Active Race Color 1: " + WebColors[webColorRaceSeg1] + "<br>";
+        message += "Active Race Color 2: " + WebColors[webColorRaceSeg2] + "<br>";
+        message += "Completed Race Color: " + WebColors[webColorEnd] + "<br>";
+        message += "Race Time Expired Color: " + WebColors[webColorExpired]  + "<br>";
+      }
+      message += "<br>";
+    //If update checked, write new values to flash
+      if (saveSettings == "save") {
+        message += "<b>New settings saved as new boot defaults.</b> Controller will now reboot.<br>";
+        message += "You can return to the settings page after the boot complete (timer will show 'Ready' when boot is finished).<br><br>";
+      } else {
+        message += "<i>*Current settings are temporary and will reset back to boot defaults when controller is restarted.\
+          If you wish to make the current settings the new boot defaults, return to the Settings page and check the box to save the current settings as the new boot values.<br><br>";
+      }
+      message += "<br><a href=\"http://";
+      message += baseIPAddress;
+      message += "\">Return to settings</a><br>";
+      message += "</body></html>";
+      server.send(200, "text/html", message);
+      delay(1000);
+      yield();
+      if (saveSettings == "save") {
+        writeConfigFile(true); 
+      }
+  }
+}
+
 void handleRestart() {
     String restartMsg = "<HTML>\
-      </head>\
+      <head>\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
         <title>Controller Restart</title>\
         <style>\
           body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
@@ -538,6 +854,34 @@ void handleOTAUpdate() {
   ota_time = ota_time_window;
   ota_time_elapsed = 0;
 }
+
+void onOTAEnd (bool success) {
+  //Post Web OTA Update
+  //This is called by the ElegantOTA setup, found under setupWifi()
+  String htmlPage = "<HTML>\
+      <head>\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
+        <title>Firmware Update</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+      </head>\
+      <body>";
+  if (success) {
+    htmlPage += "<H1>Firmware Update Successful!</H1><br><br>";
+    htmlPage += "The controller will now reboot.  Once the boot is complete, you can return to the main settings page.<br><br>";
+
+  } else {
+    htmlPage += "<H1 style=\"color:red;\">Firmware Update FAILED!!!</H1><br><br>";
+    htmlPage += "The original firmware is still installed.<br><br>";
+  }
+  htmlPage += "<a href=\"http://";
+  htmlPage += baseIPAddress;
+  htmlPage += "\">Return to settings</a><br>";
+  htmlPage += "</body></html>";
+  server.send(200, "text/html", htmlPage);
+}
+
 
 void handleLEDBrightness() {
   //Handle updating run time setting via http: query string
@@ -664,9 +1008,13 @@ void setupWebHandlers() {
   server.on("/reset", handleReset);
   server.on("/leds", handleLEDBrightness);
   server.on("/timer", handleTimerBrightness);
+  server.on("/applysettings", handleSettingsUpdate);
   server.onNotFound(handleNotFound);
   //OTAUpdate
   server.on("/otaupdate", handleOTAUpdate);
+  //Web Firmware (ElegantOTA) update intiated by:
+  // http://ip_address/update  (or ./update in code)
+
 }
 
 /* =====================================
@@ -721,6 +1069,10 @@ bool setupWifi() {
     Serial.println(baseIPAddress);
     Serial.println("Starting web server...");
   #endif  
+  //Web OTA Firmware 
+  ElegantOTA.begin(&server);    // Start ElegantOTA
+  ElegantOTA.onEnd(onOTAEnd);   //Page to display after update
+
   server.begin();
   return true;
 }
@@ -737,7 +1089,7 @@ void setup() {
   #endif
   esp_netif_init();
   setupWebHandlers();
-  
+  delay(1000);  
   // -----------------------------------------
   //  Captive Portal and Wifi Onboarding Setup
   // -----------------------------------------
@@ -751,7 +1103,10 @@ void setup() {
   #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
     Serial.println("Starting setup...");
   #endif
+  // Setup color arrays
+  defineColors();   //This must be done before reading config file
   readConfigFile();
+
   if (onboarding) {
     #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
       Serial.println("Entering Onboarding setup...");
@@ -839,27 +1194,17 @@ void setup() {
     FastLED.show();
     delay(500);
   }
-  //-----------------------------------------
-  // Calculate max race time in milliseconds
-  //-----------------------------------------
-  if ((showTenths) && (MAX_RACE_MINUTES > 10)) {
-    maxRaceTime = 599900;
-  } else if (MAX_RACE_MINUTES > 100) {
-    maxRaceTime = 5999900;
-  } else {
-    maxRaceTime = (((MAX_RACE_MINUTES - 1) * 60000) + 59900);
-  }
-
   //Set initial timing mode, based on toggle position
   setTimingMode();
 
   #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
     Serial.println("Setup complete. Entering main loop...");
   #endif
-
-  
 }
 
+// =====================================
+//         *** MAIN LOOP ***
+// =====================================
 void loop() {
   //Handle OTA updates when OTA flag set via HTML call to http://ip_address/otaupdate
   if (ota_flag) {
@@ -881,6 +1226,7 @@ void loop() {
     //Only execute loop and rest of app if onboarding has been completed
     int startDist = 0;
     int endDist = 0;
+    ElegantOTA.loop();    
     //Blink onboard LED three times then remain on - should only start after successful onboard
     if (useOnboardLED) {
       while (blinkLED < 3) {
@@ -1043,8 +1389,6 @@ void startTime() {
     timerDisplay.print(" 00:00");
   }
   if (useLEDs) {
-    //fill_solid(LEDs, numLEDs, CRGB::Green);
-    //FastLED.show();
     showRaceLEDs();
   }
   timerRunning = true;
@@ -1054,9 +1398,10 @@ void startTime() {
 }
 
 void stopTime() {
-  //stop timer and turn LEDs red
+  //stop timer and set end LED color
   if (useLEDs) {
-    fill_solid(LEDs, numLEDs, CRGB::Green);
+    //fill_solid(LEDs, numLEDs, CRGB::Green);
+    fill_solid(LEDs, numLEDs, ledColorEnd);
     FastLED.show();
   }
   timerComplete = true;
@@ -1071,7 +1416,7 @@ void resetTimer() {
   timerRunning = false;
   timerComplete = false;
   if (useLEDs) {
-    fill_solid(LEDs, numLEDs, CRGB::Yellow);
+    fill_solid(LEDs, numLEDs, ledColorReady);
     FastLED.show();
   }
   timerDisplay.setTextAlignment(PA_CENTER);
@@ -1095,7 +1440,7 @@ void updateTimer() {
       timerRunning = false;
       timerComplete = true;
       if (useLEDs) {
-        fill_solid(LEDs, numLEDs, CRGB::Red);
+        fill_solid(LEDs, numLEDs, ledColorExpired);
         FastLED.show();
       }
       timerDisplay.print("Timeout");
@@ -1124,7 +1469,7 @@ void updateTimer() {
       timerRunning = false;
       timerComplete = true;
       if (useLEDs) {
-        fill_solid(LEDs, numLEDs, CRGB::Red);
+        fill_solid(LEDs, numLEDs, ledColorExpired);
         FastLED.show();
       }
       timerDisplay.print("Timeout");
@@ -1190,20 +1535,20 @@ void showRaceLEDs() {
     if (numLEDs > 9) { //Only split if there is at least 10 LEDs
       while (i < (numLEDs - (segmentLen + 1))) {
         //Blue LEDs
-        fill_solid((LEDs + i), segmentLen, CRGB::Blue);
+        fill_solid((LEDs + i), segmentLen, ledColorRaceSeg1);
         i = i + segmentLen;
         //White LEDs
-        fill_solid((LEDs + i), segmentLen, CRGB::White);
+        fill_solid((LEDs + i), segmentLen, ledColorRaceSeg2);
         i = i + segmentLen;
       }
       //Light any remaining LEDs in blue
       remainingLEDs = (numLEDs - i);
       if (remainingLEDs > 0) {
-        fill_solid(LEDs + (numLEDs - remainingLEDs), remainingLEDs, CRGB::Blue);
+        fill_solid(LEDs + (numLEDs - remainingLEDs), remainingLEDs, ledColorRaceSeg1);
       }
     } else if (numLEDs > 0) {   //Skip if zero to avoid divide by zero error
-      //Just fill with blue
-      fill_solid(LEDs, numLEDs, CRGB::Blue);
+      //Just fill with first color
+      fill_solid(LEDs, numLEDs, ledColorRaceSeg1);
     }
     FastLED.show();
   }
@@ -1211,6 +1556,17 @@ void showRaceLEDs() {
 //=============================
 //  Misc. Functions
 //=============================
+void updateDisplays(int origLEDCount) {
+  //Called when any settings changes are made and timer/LED strips need to be updated with new values
+  timerDisplay.setZoneEffect(0, invertTimer, PA_FLIP_UD);
+  timerDisplay.setZoneEffect(0, invertTimer, PA_FLIP_LR);
+  timerDisplay.setIntensity(timerBrightness);
+  fill_solid(LEDs, origLEDCount, CRGB::Black);
+  FastLED.setBrightness(ledBrightness);
+  FastLED.show();
+  resetTimer();
+}
+
 boolean isValidNumber(String str){
   for(byte i=0;i<str.length();i++) {
     if(isDigit(str.charAt(i))) return true;

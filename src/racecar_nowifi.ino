@@ -3,7 +3,7 @@
     This version does not implement any wifi functionality.  For
     this reason, other features such as OTA and URL commands are 
     also unavailable.
-    Version: 0.20  
+    Version: 0.21  
    ===============================================================*/
 #include <Wire.h>                       //I2C - distance sensors (ESP Core)
 #include <SPI.h>                        //SPI - Timer display (ESP Core)
@@ -17,7 +17,7 @@
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
 #include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED
 
-#define VERSION "v0.20 (ESP32 NoWiFi)"
+#define VERSION "v0.21 (ESP32 NoWiFi)"
 #define APPNAME "RACECAR TIMER"
 #define SERIAL_DEBUG 0                  //Set to 1 to enable serial debugging via USB or RX/TX
 
@@ -40,7 +40,7 @@
 
 //Timing & System Options
 #define USE_TENTHS true
-#define MAX_RACE_MINUTES 5              //Max race time in minutes (9 max when using tenths, 99 otherwise)
+#define MAX_RACE_TIME 599                  //Max race time in seconds (599 max when using tenths, 5999 otherwise)
 //LED Lighting Strips
 #define USE_LEDS true;                     //Use LED strips. Set to false if not using LED strips
 #define NUM_LEDS 65                        //Number of LEDs (one side only). Set to zero if USE_LEDS is false.
@@ -169,12 +169,12 @@ void setup() {
   //-----------------------------------------
   // Calculate max race time in milliseconds
   //-----------------------------------------
-  if ((showTenths) && (MAX_RACE_MINUTES > 10)) {
+  if ((showTenths) && (MAX_RACE_TIME > 599)) {
     maxRaceTime = 599900;
-  } else if (MAX_RACE_MINUTES > 100) {
+  } else if (MAX_RACE_TIME > 5999) {
     maxRaceTime = 5999900;
   } else {
-    maxRaceTime = (((MAX_RACE_MINUTES - 1) * 60000) + 59900);
+    maxRaceTime = ((MAX_RACE_TIME) * 1000); //(((MAX_RACE_TIME - 1) * 60000) + 59900);
   }
 
   //Set initial timing mode, based on toggle position
