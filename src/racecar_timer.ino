@@ -8,7 +8,7 @@
     http://ip_address/leds&brightness=x - change LED brightness.  x = 1 to 10.
     http://ip_address/timer&brightness=x - change timer brightness. x = 1 to 10.
 
-    Version: 0.21  
+    Version: 0.22  
    ===============================================================*/
 //Basic Web and Wifi
 #include <WiFi.h>
@@ -16,24 +16,24 @@
 #include <WebServer.h>
 #include <FS.h>                         //Arduino ESP32 Core - Handles filesystem functions (read/write config file)
 #include <LittleFS.h>
-#include <ArduinoJson.h>                //Needed for WiFi onboarding: https://arduinojson.org/ 
+#include <ArduinoJson.h>                //Needed for WiFi onboarding: https://arduinojson.org/ (v7.2.0)
 #include <Wire.h>                       //I2C - distance sensors (ESP Core)
 #include <SPI.h>                        //SPI - Timer display (ESP Core)
 //OTA and Firmware Update Libraries
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>                 //OTA Updates: https://github.com/jandrassy/ArduinoOTA
-#include <ElegantOTA.h>                 // v3.1.5 Web based firmware OTA Update:  https://github.com/ayushsharma82/ElegantOTA/
+#include <ArduinoOTA.h>                 //OTA Updates: https://github.com/jandrassy/ArduinoOTA (v1.0.12)
+#include <ElegantOTA.h>                 //Web based firmware OTA Update:  https://github.com/ayushsharma82/ElegantOTA/ (v3.1.5)
 //VL53L0X
-#include <VL53L0X.h>                    //VL53L0X ToF Sensor https://github.com/pololu/vl53l0x-arduino  
+#include <VL53L0X.h>                    //VL53L0X ToF Sensor https://github.com/pololu/vl53l0x-arduino (v1.3.1) 
 //MAX7219 Display
-#include <MD_MAX72xx.h>                 //MAX7219 Matrix (SPI) https://github.com/JemRF/max7219 (installed as dependency of MD_Parola)
-#include <MD_Parola.h>                  //MAX7219 Matrix https://github.com/MajicDesigns/MD_Parola
+#include <MD_MAX72xx.h>                 //MAX7219 Matrix (SPI) https://github.com/JemRF/max7219 (installed as dependency of MD_Parola) (v3.5.1)
+#include <MD_Parola.h>                  //MAX7219 Matrix https://github.com/MajicDesigns/MD_Parola (v3.7.3)
 //LEDs
 //LED-related Libraries
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
-#include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED
+#include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED (v3.7.1)
 
-#define VERSION "v0.21 (ESP32)"
+#define VERSION "v0.22 (ESP32)"
 #define APPNAME "RACECAR TIMER"
 #define WIFIMODE 2                      // 0 = Only Soft Access Point, 1 = Only connect to local WiFi network with UN/PW, 2 = Both
 #define SERIAL_DEBUG 0                  // 0 = Disable (must be disabled if using RX/TX pins), 1 = enable
@@ -413,7 +413,7 @@ void webMainPage() {
     mainPage += "Changes made below will be used <b><i>until the controller is restarted</i></b>, unless the box to save the settings as new boot defaults is checked. \
     To test settings, leave the box unchecked and click 'Update'. Once you have settings you'd like to keep, check the box and click 'Update' to write the settings as the new boot defaults. \
     If you want to change wifi settings or the device name, you must use the 'Reset All' command.\
-    <b><p style=\"color:red;\">NOTE: Changing any settings below will stop the timer and reset the system back to 'Ready' mode!</b></p>\
+    <b><p style=\"color:red;\">NOTE: Changing any settings below will stop the timer if running and reset the system back to 'Ready' mode!</b></p>\
     <form method=\"post\" enctype=\"application/x-www-form-urlencoded\" action=\"/applysettings\">";
 
     //Sensor Settings
@@ -543,17 +543,19 @@ void webMainPage() {
       <input type=\"checkbox\" name=\"chksave\" value=\"save\">Save all settings as new boot defaults (controller will reboot)<br><br>\
       <input type=\"submit\" value=\"Update\">\
       </form>\
-      <br>\
       <h2>Controller Commands</h2>\
       <b>Caution</b>: Restart and Reset are executed <i>immediately</i> when the button is clicked.<br>\
       <table border=\"1\" cellpadding=\"10\">\
       <tr>\
       <td><button id=\"btnrestart\" onclick=\"location.href = './restart';\">Restart</button></td><td>This will reboot controller and reload default boot values.</td>\
       </tr><tr>\
-      <td><button id=\"btnreset\" style=\"background-color:#FAADB7\" onclick=\"location.href = './reset';\">RESET ALL</button></td><td><b>WARNING</b>: This will clear all settings, including WiFi! You must complete initial setup again.</td>\
+      <td><button id=\"btnreset\" style=\"background-color:#FAADB7\" onclick=\"location.href = './reset';\">RESET ALL</button></td><td><b><font color=red>WARNING</font></b>: This will clear all settings, including WiFi! You must complete initial setup again.</td>\
       </tr><tr>\
-      <td><button id=\"btnupdate\" onclick=\"location.href = './update';\">Firmware Upgrade</button></td><td><i>BETA:</i> Upload and apply new firmware from local file.</td>\
-      </tr></table><br>";
+      <td><button id=\"btnupdate\" onclick=\"location.href = './update';\">Firmware Upgrade</button></td><td><i>BETA:</i> Upload and apply new firmware from a compiled .bin file.</td>\
+      </tr><tr>\
+      <td><button id=\"btnotamode\" onclick=\"location.href = './otaupdate';\">Arudino OTA</button></td><td>Put system in Arduino OTA mode for approx. 20 seconds to flash modified firmware from IDE.</td>\
+      </tr>\
+      </table><br>";
     mainPage += "-------------------------------------------------<br><br>";
     mainPage += "You may also issue the following commands directly via your browser to make changes:<br><br>";
     mainPage += "<table>";
@@ -847,7 +849,23 @@ void handleNotFound() {
 }
 
 void handleOTAUpdate() {
-  String ota_message = "<h1>VAR_APP_NAME Ready for upload...<h1><h3>Start upload from IDE now</h3>";
+  String ota_message = "<HTML>\
+      <head>\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
+        <title>Arduino OTA Mode</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+      </head>\
+      <body>";
+  ota_message += "<h1>VAR_APP_NAME Ready for upload...<h1><h3>Start upload from IDE now</h3><br>";
+  ota_message += "If no communication is received after approximately 20 seconds, the system will exit OTA mode and return to normal operation.<br><br>\
+      If a firmware update is successfully delivered, the controller will reboot.  You can return to the settings after the boot process completes.<br><br>";
+  ota_message += "<a href=\"http://";
+  ota_message += baseIPAddress;
+  ota_message += "\">Return to settings</a><br>";
+  ota_message += "</body></html>";
+
   ota_message.replace("VAR_APP_NAME", APPNAME);
   server.send(200, "text/html", ota_message);
   ota_flag = true;
@@ -1519,10 +1537,14 @@ void showOTA(bool show) {
     timerDisplay.displayClear();
     timerDisplay.print("Upload");
   } else {
-    timerDisplay.displayClear();
-    fill_solid(LEDs, numLEDs, CRGB::Black);
-    FastLED.show();
-    //resetTimer();
+    if (blinkLED < 3) {
+      //Still in boot up mode
+      timerDisplay.displayClear();
+      fill_solid(LEDs, numLEDs, CRGB::Black);
+      FastLED.show();
+    } else {
+      resetTimer();
+    }
   }
 }
 
