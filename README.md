@@ -5,6 +5,6 @@ The project was developed as a simple automatic timing system for 6th grade comp
 
 It uses and ESP32, MAX7219 dipslay and VL53L0X sensors to determine when an object crosses the start or finish line and starts or stops the timer (with 0.1 second resolution), shown on the matrix display.  Use of the VL53L0X distance sensors instead of motion allows movement around and near the 'race course' without triggering the sensors.  Optional LED lighting is also synced to the start, active and end or race phases.
 
-The full version includes WiFi onboarding, a web interface for some settings and over-the-air (OTA) updates for future firmwware releases.
+The full version includes WiFi onboarding, a web interface for some settings and over-the-air (OTA) updates for future firmwware releases.  Note that support for the no-WiFi version was dropped beginning with version 0.22.  If you truly need a version that does not require or use WiFi, please see [release 0.21](https://github.com/Resinchem/Robot-Car-Timer/releases/tag/v0.21), which was the last version that supported a -noWiFi version.
 
 Please refer to the [wiki](https://github.com/Resinchem/Robot-Car-Timer/wiki) (coming soon) for full information, including installation, setup, options and use of the system.
