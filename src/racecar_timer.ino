@@ -8,7 +8,7 @@
     http://ip_address/leds&brightness=x - change LED brightness.  x = 1 to 10.
     http://ip_address/timer&brightness=x - change timer brightness. x = 1 to 10.
 
-    Version: 0.22  
+    Version: 0.23  
    ===============================================================*/
 //Basic Web and Wifi
 #include <WiFi.h>
@@ -33,7 +33,7 @@
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
 #include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED (v3.7.1)
 
-#define VERSION "v0.22 (ESP32)"
+#define VERSION "v0.23 (ESP32)"
 #define APPNAME "RACECAR TIMER"
 #define WIFIMODE 2                      // 0 = Only Soft Access Point, 1 = Only connect to local WiFi network with UN/PW, 2 = Both
 #define SERIAL_DEBUG 0                  // 0 = Disable (must be disabled if using RX/TX pins), 1 = enable
@@ -58,12 +58,14 @@
 
 //Timing & System Options - can also be updated/saved via web settings
 #define USE_TENTHS true                   //Setting to false will only show minutes and whole seconds on timer
-#define MAX_RACE_TIME 300                 //Max race time in seconds (599 max when using tenths, 5999 otherwise)
+#define MAX_RACE_TIME 599                 //Max race time in seconds (599 max when using tenths, 5999 otherwise)
 #define USE_LEDS true                     //Set to false if not using LED strips (changing this overrides num LEDs)
 #define DEFAULT_TIMER_INTENSITY 3         //Matrix timer starting brightness (0-10). Can be changed via URL command.
-//Sensor Distances (in mm)
-#define START_SENSOR_DIST 406              //Should be distance (mm) from start line sensor to the opposite edge of race track
-#define END_SENSOR_DIST 406                //Should be distance (mm) from end line sensor to the opposite edge of race track
+//Sensor Distances (in mm) and debounce
+#define START_SENSOR_DIST 400             //Should be distance (mm) from start line sensor to the opposite edge of race track
+#define END_SENSOR_DIST 400               //Should be distance (mm) from end line sensor to the opposite edge of race track
+#define START_SENSOR_DEBOUNCE 2           //Debounce value for start sensor (valid values 1-5)
+#define END_SENSOR_DEBOUNCE 2             //Debounce value for end sensor (valid values 1-5)
 //LED Lighting Strips
 #define NUM_LEDS 500                       //Number of LEDs (one side only - max - will be updated via onboarding)
 #define MILLIAMP_MAX 15000                 //Max milliamp draw permitted by the LEDs
@@ -122,6 +124,12 @@ bool timerComplete = false;
 bool bootUp = true;
 unsigned long prevTime = 0;
 unsigned long elapsedTime = 0;
+
+//Sensor Debouncing (longer cables/smaller gauge wire may result in noisy signals)
+byte startTriggerCount = 0;
+byte endTriggerCount = 0;
+byte startTriggerMax = START_SENSOR_DEBOUNCE;  //Start Sensor debounce max count
+byte endTriggerMax = END_SENSOR_DEBOUNCE;     //End Sensor debounce max count
 
 //Manual Start/Stop button debouncing
 unsigned long lastDebounceTime = 0;         
@@ -235,7 +243,9 @@ void readConfigFile() {
           invertTimer = json["invert_timer"] | false;
           maxRaceTime = json["max_race_time"] | 599000;
           startSensorDist = json["start_sensor_dist"] | 400; 
+          startTriggerMax = json["start_trigger_max"] | 2;
           endSensorDist = json["end_sensor_dist"] | 400;
+          endTriggerMax = json["end_trigger_max"] | 2;
           webColorReady = json["color_ready"] | 8;
           webColorRaceSeg1 = json["color_race_seg1"] | 1;
           webColorRaceSeg2 = json["color_race_seg2"] | 0;
@@ -297,7 +307,9 @@ void writeConfigFile(bool restart_ESP) {
     doc["invert_timer"] = invertTimer;
     doc["max_race_time"] = maxRaceTime;
     doc["start_sensor_dist"] = startSensorDist;
+    doc["start_trigger_max"] = startTriggerMax;
     doc["end_sensor_dist"] = endSensorDist;
+    doc["end_trigger_max"] = endTriggerMax;
     doc["color_ready"] = webColorReady;
     doc["color_race_seg1"] = webColorRaceSeg1;
     doc["color_race_seg2"] = webColorRaceSeg2;
@@ -418,7 +430,8 @@ void webMainPage() {
 
     //Sensor Settings
     mainPage += "<b><u>Sensor Settings</u></b><br>\
-      Maximum distances (in mm) that the sensors will trigger based on motion.  Should be the distance from sensor to just inside the opposite side of the track or course.<br><br>\
+      Maximum distances (in mm) that the sensors will trigger based on motion.  Should be the distance from sensor to just inside the opposite side of the track or course.<br>\
+      Do not change the debounce settings unless you are experiencing false triggers.  See the Wiki/User guide for more info on using the debounce setttings.<br><br>\
       <table border=\"0\">\
       <tr>\
       <td><label for=\"startsensordist\">Start Line Sensor Distance (100-1000):</label></td>\
@@ -426,10 +439,20 @@ void webMainPage() {
     mainPage += String(startSensorDist);  
     mainPage += "\">mm</td></tr>\
       <tr>\
+      <td><label for=\"starttriggercount\">Start Sensor Debounce Count (1-5):</label></td>\
+      <td><input type=\"number\" min=\"1\" max=\"5\" step=\"1\" name=\"starttriggercount\" value=\"";
+    mainPage += String(startTriggerMax);
+    mainPage += "\"></td></tr>\
+      <tr>\
       <td><label for=\"endsensordist\">Finish Line Sensor Distance (100-1000):</label></td>\
       <td><input type=\"number\" min=\"100\" max=\"1000\" step=\"1\" name=\"endsensordist\" value=\"";
     mainPage += String(endSensorDist);
-    mainPage += "\">mm</td></tr></table><br>";
+    mainPage += "\">mm</td></tr>\
+      <tr>\
+      <td><label for=\"endtriggercount\">Finish Sensor Debounce Count (1-5):</label></td>\
+      <td><input type=\"number\" min=\"1\" max=\"5\" step=\"1\" name=\"endtriggercount\" value=\"";
+    mainPage += String(endTriggerMax);
+    mainPage += "\"></td></tr></table><br>";
 
     //Timer Settings
     mainPage += "<b><u>Timer Settings</u></b><br>\
@@ -703,7 +726,10 @@ void handleSettingsUpdate() {
       maxRaceTime = maxRaceTime * 1000;
     }
     startSensorDist = server.arg("startsensordist").toInt();
+    startTriggerMax = server.arg("starttriggercount").toInt();
     endSensorDist = server.arg("endsensordist").toInt();
+    endTriggerMax = server.arg("endtriggercount").toInt();
+
     //LED Colors
     webColorReady = server.arg("readycolor").toInt();
     webColorRaceSeg1 = server.arg("racecolor1").toInt();
@@ -735,7 +761,9 @@ void handleSettingsUpdate() {
       <H3>Current values are:</H3>";
       message += "<u>Sensor Settings</u><br>";
       message += "Start Sensor Max Distance: " + String(startSensorDist) + " mm<br>";
-      message += "End Sensor Max Distance: " + String(endSensorDist) + " mm<br><br>";
+      message += "Start Sensor Debounce Count: " + String(startTriggerMax) + "<br>";
+      message += "End Sensor Max Distance: " + String(endSensorDist) + " mm<br>";
+      message += "End Sensor Debounce Count: " + String(endTriggerMax) + "<br><br>";
 
       message += "<u>Timer Settings</u><br>";
       message += "Timer Brightness: " + String(timerBrightness)  + "<br>";
@@ -1331,15 +1359,27 @@ void loop() {
         //Race Finished: timerRunning FALSE and timerComplete TRUE
         if ((!timerRunning) && (!timerComplete)) {
           if (startDist < START_SENSOR_DIST) {
+            startTriggerCount++;
+            if (startTriggerCount >= startTriggerMax) {
             //start timer and turn LEDs to race pattern
-            startTime();
-            prevTime = millis();
-            currentMillis = prevTime;
-            elapsedTime = 0;
+              startTime();
+              prevTime = millis();
+              currentMillis = prevTime;
+              elapsedTime = 0;
+              startTriggerCount = 0;
+            }
+          } else {
+            startTriggerCount = 0;
           }
         } else if ((timerRunning) && (!timerComplete)) {
           if (endDist < END_SENSOR_DIST) {
-            stopTime();
+            endTriggerCount++;
+            if (endTriggerCount >= endTriggerMax) {
+              stopTime();
+              endTriggerCount = 0;
+            }
+          } else {
+            endTriggerCount = 0;
           }
         }
       }
