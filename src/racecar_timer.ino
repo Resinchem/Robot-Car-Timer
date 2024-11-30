@@ -8,7 +8,7 @@
     http://ip_address/leds&brightness=x - change LED brightness.  x = 1 to 10.
     http://ip_address/timer&brightness=x - change timer brightness. x = 1 to 10.
 
-    Version: 0.23  
+    Version: 0.24  
    ===============================================================*/
 //Basic Web and Wifi
 #include <WiFi.h>
@@ -33,7 +33,7 @@
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
 #include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED (v3.7.1)
 
-#define VERSION "v0.23 (ESP32)"
+#define VERSION "v0.24 (ESP32)"
 #define APPNAME "RACECAR TIMER"
 #define WIFIMODE 2                      // 0 = Only Soft Access Point, 1 = Only connect to local WiFi network with UN/PW, 2 = Both
 #define SERIAL_DEBUG 0                  // 0 = Disable (must be disabled if using RX/TX pins), 1 = enable
@@ -99,7 +99,7 @@ bool onboarding = false;                   //Will be set to true if no config fi
 
 //Local Variables (Settings & options)
 int numLEDs = 30;
-byte ledBrightness = DEFAULT_LED_BRIGHTNESS;
+unsigned int ledBrightness = DEFAULT_LED_BRIGHTNESS;
 int milliAmpsMax = 8000;
 byte timerBrightness = DEFAULT_TIMER_INTENSITY;  //This is not part of onboarding, but can be changed via URL command (valid 1-10).
 bool showTenths = USE_TENTHS;                    //true = show tenths of a second, false = show only minutes/seconds
@@ -953,6 +953,9 @@ void handleLEDBrightness() {
           } else {
             //Set LED brightness
             ledBrightness = (parmValue * 25);
+            if (ledBrightness > 250) {
+              ledBrightness = 250;
+            } 
             FastLED.setBrightness(ledBrightness);
             FastLED.show();
           }
