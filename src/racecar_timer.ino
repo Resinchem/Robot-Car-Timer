@@ -8,7 +8,7 @@
     http://ip_address/leds&brightness=x - change LED brightness.  x = 1 to 10.
     http://ip_address/timer&brightness=x - change timer brightness. x = 1 to 10.
 
-    Version: 0.24  
+    Version: 0.25
    ===============================================================*/
 //Basic Web and Wifi
 #include <WiFi.h>
@@ -33,7 +33,7 @@
 #define FASTLED_INTERNAL                // Suppress FastLED SPI/bitbanged compiler warnings
 #include <FastLED.h>                    // v3.7.1 LED Strip Control: https://github.com/FastLED/FastLED (v3.7.1)
 
-#define VERSION "v0.24 (ESP32)"
+#define VERSION "v0.25 (ESP32)"
 #define APPNAME "RACECAR TIMER"
 #define WIFIMODE 2                      // 0 = Only Soft Access Point, 1 = Only connect to local WiFi network with UN/PW, 2 = Both
 #define SERIAL_DEBUG 0                  // 0 = Disable (must be disabled if using RX/TX pins), 1 = enable
@@ -62,8 +62,8 @@
 #define USE_LEDS true                     //Set to false if not using LED strips (changing this overrides num LEDs)
 #define DEFAULT_TIMER_INTENSITY 3         //Matrix timer starting brightness (0-10). Can be changed via URL command.
 //Sensor Distances (in mm) and debounce
-#define START_SENSOR_DIST 400             //Should be distance (mm) from start line sensor to the opposite edge of race track
-#define END_SENSOR_DIST 400               //Should be distance (mm) from end line sensor to the opposite edge of race track
+#define START_SENSOR_DIST 500             //Should be distance (mm) from start line sensor to the opposite edge of race track
+#define END_SENSOR_DIST 500               //Should be distance (mm) from end line sensor to the opposite edge of race track
 #define START_SENSOR_DEBOUNCE 2           //Debounce value for start sensor (valid values 1-5)
 #define END_SENSOR_DEBOUNCE 2             //Debounce value for end sensor (valid values 1-5)
 //LED Lighting Strips
@@ -86,6 +86,7 @@
 bool useOnboardLED = true;                 //Use onboard LED to show successful wifi join and config file creation 
 int blinkLED = 0;                          //Counter for above.  LED will blink 5 times and remain on if useOnboardLED is true
 bool useLEDs = USE_LEDS;                   //LED strips will be disabled if num of LEDs is set to zero during onboarding.
+bool showAddressOnBoot = true;             //Output device IP address on MAX7219 on normal boot
 
 //Local Variables (wifi/onboarding)
 String deviceName = "RaceTimer";           //Default Device Name - 16 chars max, no spaces. 
@@ -101,15 +102,15 @@ bool onboarding = false;                   //Will be set to true if no config fi
 int numLEDs = 30;
 unsigned int ledBrightness = DEFAULT_LED_BRIGHTNESS;
 int milliAmpsMax = 8000;
-byte timerBrightness = DEFAULT_TIMER_INTENSITY;  //This is not part of onboarding, but can be changed via URL command (valid 1-10).
-bool showTenths = USE_TENTHS;                    //true = show tenths of a second, false = show only minutes/seconds
-bool invertTimer = false;                        //Flip timer display horizontally (so it can be mounted upside down)
-unsigned long maxRaceTime = 599900;              //Just a default starting value.  Actual value updated in Setup from config file
-unsigned int startSensorDist = 400;              //Max trigger distance for start line sensor (in mm)
-unsigned int endSensorDist = 400;                //Max trigger distance for finish line sensor (in mm)
+byte timerBrightness = DEFAULT_TIMER_INTENSITY;      //This is not part of onboarding, but can be changed via URL command (valid 1-10).
+bool showTenths = USE_TENTHS;                        //true = show tenths of a second, false = show only minutes/seconds
+bool invertTimer = false;                            //Flip timer display horizontally (so it can be mounted upside down)
+unsigned long maxRaceTime = (MAX_RACE_TIME) * 1000;  //Just a default starting value.  Actual value updated in Setup from config file
+unsigned int startSensorDist = START_SENSOR_DIST;    //Max trigger distance for start line sensor (in mm)
+unsigned int endSensorDist = END_SENSOR_DIST;        //Max trigger distance for finish line sensor (in mm)
 
 //OTA Variables
-String otaHostName = deviceName + "_OTA";   //Will be updated by device name from onboarding + _OTA
+String otaHostName = deviceName + "OTA";   //Will be updated by device name from onboarding + _OTA
 bool ota_flag = true;                       // Must leave this as true for board to broadcast port to IDE upon boot
 uint16_t ota_boot_time_window = 2500;       // minimum time on boot for IP address to show in IDE ports, in millisecs
 uint16_t ota_time_window = 20000;           // time to start file upload when ota_flag set to true (after initial boot), in millsecs
@@ -141,6 +142,7 @@ int lastButtonState = HIGH;                 //Set initial state (HIGH = not pres
 int oldAutoState;
 int oldManualState;
 bool poweredDown = false;
+String lastRaceTime = "0:00.0";
 
 //LED Color Definitions - values can be changed via web settings
 CRGB ledColorReady = CRGB::Yellow;
@@ -234,17 +236,17 @@ void readConfigFile() {
           #endif
           // Read values here from LittleFS (v0.42 - add defaults for all values in case they don't exist to avoid potential boot loop)
           //DON'T NEED TO STORE OR RECALL WIFI INFO - Written to flash automatically by library when successful connection.
-          deviceName = json["device_name"] | "MyDevice";
+          deviceName = json["device_name"] | "RaceTimer";
           numLEDs = json["led_count"] | 30;
           ledBrightness = json["led_brightness"] | 125;
           milliAmpsMax = json["milli_amps_max"] | 2500;
           timerBrightness = json["timer_brightness"] | 3;
           showTenths = json["show_tenths"] | true;
           invertTimer = json["invert_timer"] | false;
-          maxRaceTime = json["max_race_time"] | 599000;
-          startSensorDist = json["start_sensor_dist"] | 400; 
+          maxRaceTime = json["max_race_time"] | 120;
+          startSensorDist = json["start_sensor_dist"] | 500; 
           startTriggerMax = json["start_trigger_max"] | 2;
-          endSensorDist = json["end_sensor_dist"] | 400;
+          endSensorDist = json["end_sensor_dist"] | 500;
           endTriggerMax = json["end_trigger_max"] | 2;
           webColorReady = json["color_ready"] | 8;
           webColorRaceSeg1 = json["color_race_seg1"] | 1;
@@ -422,6 +424,8 @@ void webMainPage() {
     mainPage += "<tr><td>IP Address:</td><td>" + baseIPAddress + "</td</tr>";
     mainPage +="</table>";
     mainPage += "-------------------------------------------------<br><br>";
+    mainPage += "<button type=\"button\" id=\"btnrace\" style=\"font-size: 16px; border-radius: 12px; width: 130px; height: 30px; background-color: #99f2be;\" ";
+    mainPage += "onclick=\"location.href = './managerace';\">Manage Race</button><br><br>";
     mainPage += "Changes made below will be used <b><i>until the controller is restarted</i></b>, unless the box to save the settings as new boot defaults is checked. \
     To test settings, leave the box unchecked and click 'Update'. Once you have settings you'd like to keep, check the box and click 'Update' to write the settings as the new boot defaults. \
     If you want to change wifi settings or the device name, you must use the 'Reset All' command.\
@@ -596,6 +600,61 @@ void webMainPage() {
   mainPage.replace("VAR_CURRENT_VER", VERSION);
   server.send(200, "text/html", mainPage);
 
+}
+
+void webManageRace() {
+  String racePage = "<html><head>";
+  racePage += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";  //make page responsive
+  racePage += "<title>VAR_APP_NAME Main Page</title>\
+  <style>\
+    body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #0000ff; }\
+  </style>\
+  </head>\
+  <body>";
+  racePage += "<H1>VAR_APP_NAME Race Management</H1>";
+  racePage += "Firmware Version: VAR_CURRENT_VER<br><br>";
+  racePage += "<table border=\"1\" >";
+  racePage += "<tr><td>Device Name:</td><td>" + deviceName + "</td</tr>";
+  racePage += "<tr><td>WiFi Network:</td><td>" + WiFi.SSID() + "</td</tr>";   
+  racePage += "<tr><td>MAC Address:</td><td>" + strMacAddr + "</td</tr>";
+  racePage += "<tr><td>IP Address:</td><td>" + baseIPAddress + "</td</tr>";
+  racePage +="</table>";
+  racePage += "-------------------------------------------------<br>";
+  racePage += "<button type=\"button\" id=\"btnback\" style=\"font-size: 16px; border-radius: 8px; width: 100px; height: 30px;\" \
+   onclick=\"location.href = './';\"><< Back</button><br><br>";
+  
+  racePage += "<H2>Manage Active Races<H2>\
+    <table border=\"0\" style=\"font-size: 24px;\">\
+    <tr><td>Last Race Time:</td><td>";
+  racePage += lastRaceTime;
+  racePage += "&nbsp;&nbsp;</td>\
+    <td><button type=\"button\" id=\"btnrefresh\" style=\"font-size: 14px; border-radius: 8px; background-color: #aee8eb; 8px; width: 100px; height: 30px;\" \
+    onclick=\"location.href = './managerace';\">Refresh</button></td>\
+    <td><button type=\"button\" id=\"btnreset\" style=\"font-size: 14px; border-radius: 8px; background-color: #d7dea9; 8px; width: 100px; height: 30px;\" \
+    onclick=\"location.href = './racereset';\">Reset</button></td>\
+    </tr></table><br>";
+
+  racePage += "<H3>Manual Timing (beta)</H3>\
+    <b>IMPORTANT</b>: Using the button below does <u>NOT</u> place the system into manual timing mode and sensors will remain active. \
+    It simply allows you to toggle the running/stopped state of the timer.<br><br>\
+    <b><i>Additional Note</i></b>: The web handler may introduce a small lag in toggling the timing state. If you need to run in \
+    manual timing mode, it is recommended that you use the toggle and buttons on the timer display.<br><br>";
+  
+  racePage += "<table border=\"0\"><tr>\
+    <td><button type=\"button\" id=\"btntoggle\" style=\"font-size: 14px; border-radius: 8px; background-color: #a9f2a5; 8px; width: 100px; height: 30px;\" \
+    onclick=\"location.href = './timertoggle';\">";
+    if (timerRunning) {
+      racePage += "Stop</button></td><td>&nbsp;Current state: RUNNING</td>";
+    } else {
+      racePage += "Start</button></td><td>&nbsp;Current state: STOPPED</td>";
+    }
+  racePage += "</td></tr></table>";  
+
+  
+  racePage += "</body></html>";
+  racePage.replace("VAR_APP_NAME", APPNAME); 
+  racePage.replace("VAR_CURRENT_VER", VERSION);
+  server.send(200, "text/html", racePage);
 }
 
 void handleOnboard() {
@@ -815,6 +874,40 @@ void handleSettingsUpdate() {
         writeConfigFile(true); 
       }
   }
+}
+
+void handleRaceReset() {
+  resetTimer();
+  String page = "<HTML><head>";
+  page += "<meta http-equiv=\"refresh\" content=\"0; url='http://" + baseIPAddress + "/managerace'\">";
+  page += "'\"><title>Resetting Race Timer</title>\</head><body>";
+  page += "Resetting race timer...<br><br>";
+  page += "If you are not automatically redirected, follow this to <a href='http://" + baseIPAddress + "/managerace'> return to race management page</a>.";
+  page += "</body></html>";
+  server.send(200, "text/html", page);
+  
+}
+
+void handleTimerToggle() {
+  if (timerRunning) {
+    stopTime();
+    endTriggerCount = 0;
+  } else {
+    timerComplete = false;
+    startTime();
+    prevTime = millis();
+    elapsedTime = 0;
+    startTriggerCount = 0;
+
+  }
+  String page = "<HTML><head>";
+  page += "<meta http-equiv=\"refresh\" content=\"0; url='http://" + baseIPAddress + "/managerace'\">";
+  page += "'\"><title>Toggle Timer State</title>\</head><body>";
+  page += "Toggling Race Timer...<br><br>";
+  page += "If you are not automatically redirected, follow this to <a href='http://" + baseIPAddress + "/managerace'> return to race management page</a>.";
+  page += "</body></html>";
+  server.send(200, "text/html", page);
+
 }
 
 void handleRestart() {
@@ -1052,7 +1145,10 @@ void handleTimerBrightness() {
 void setupWebHandlers() {
   //Onboarding
   server.on("/", webMainPage);
+  server.on("/managerace", webManageRace);
   server.on("/onboard", handleOnboard);
+  server.on("/racereset", handleRaceReset);
+  server.on("/timertoggle", handleTimerToggle);
   server.on("/restart", handleRestart);
   server.on("/reset", handleReset);
   server.on("/leds", handleLEDBrightness);
@@ -1074,6 +1170,11 @@ void setupSoftAP() {
   //for onboarding
   WiFi.mode(WIFI_AP);
   WiFi.softAP(deviceName + "_AP");
+  delay(200);  //short delay for AP to start
+  //Set config with static IP
+  IPAddress Ip(192, 168, 4, 1);
+  IPAddress NMask(255, 255, 255, 0);
+  WiFi.softAPConfig(Ip, Ip, NMask);
   #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
     Serial.println("SoftAP Created");
     Serial.println("Web server starting...");
@@ -1246,6 +1347,21 @@ void setup() {
   //Set initial timing mode, based on toggle position
   setTimingMode();
 
+  if ((!onboarding) && (showAddressOnBoot)) {
+    IPAddress curIP = WiFi.localIP();
+    for (byte i=0; i < 4; i++) {
+      #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
+        Serial.print("IP Address Segment[");
+        Serial.print(i);
+        Serial.print("]: ");
+        Serial.println(curIP[i]);
+      #endif
+      timerDisplay.print(String(curIP[i]));
+      delay(750);
+    }
+    timerDisplay.displayClear();
+  }
+
   #if defined(SERIAL_DEBUG) && (SERIAL_DEBUG == 1)
     Serial.println("Setup complete. Entering main loop...");
   #endif
@@ -1361,7 +1477,7 @@ void loop() {
         //System in progress: timerRunning TRUE and timerComplete FALSE
         //Race Finished: timerRunning FALSE and timerComplete TRUE
         if ((!timerRunning) && (!timerComplete)) {
-          if (startDist < START_SENSOR_DIST) {
+          if (startDist < startSensorDist) {
             startTriggerCount++;
             if (startTriggerCount >= startTriggerMax) {
             //start timer and turn LEDs to race pattern
@@ -1375,7 +1491,7 @@ void loop() {
             startTriggerCount = 0;
           }
         } else if ((timerRunning) && (!timerComplete)) {
-          if (endDist < END_SENSOR_DIST) {
+          if (endDist < endSensorDist) {
             endTriggerCount++;
             if (endTriggerCount >= endTriggerMax) {
               stopTime();
@@ -1549,6 +1665,8 @@ void updateTimer() {
       timerDisplay.print(outputTime);
     }
   }
+  //v0.25 - capture time for display on web page
+  lastRaceTime = outputTime;
 }
 //================================================
 //  LED Functions
