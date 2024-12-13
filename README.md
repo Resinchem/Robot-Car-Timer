@@ -1,5 +1,5 @@
 ## Robot Car Race Timer System
-The project was developed as a simple automatic timing system for 6th grade computer science robot car races, but has many other potential applications.
+The project was developed as a simple automatic timing system for 6th grade computer science robot car races, but has many other potential uses.
 
 ![MainPage](https://github.com/user-attachments/assets/3a7efcf0-fd8a-4053-9d66-3ea6d5c9c996)
 
